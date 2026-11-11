@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f4f0" />
+    <title>Rangkai — YouTube Transcript</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Rangkai beranda">
+          <span class="brand-mark"><span></span><span></span><span></span></span>
+          <span>rangkai<span class="brand-dot">.</span></span>
+        </a>
+        <div class="topbar-note"><span class="live-dot"></span> Ruang transkrip pribadi</div>
+      </header>
+
+      <main>
+        <section class="hero">
+          <div class="eyebrow"><span class="eyebrow-line"></span> VIDEO TO WORDS</div>
+          <h1>Setiap kata,<br /><span>tepat pada waktunya.</span></h1>
+          <p>Ambil caption asli dari YouTube, telusuri waktunya, dan simpan semuanya dalam satu tempat.</p>
+
+          <form id="process-form" class="url-form">
+            <label class="sr-only" for="video-url">URL video YouTube</label>
+            <span class="url-icon" aria-hidden="true">↗</span>
+            <input id="video-url" type="url" placeholder="Tempel URL video YouTube di sini..." required />
+            <button id="process-button" type="submit"><span>Cari bahasa</span><span aria-hidden="true">→</span></button>
+          </form>
+          <div id="language-picker" class="language-picker hidden">
+            <label for="language-select">Bahasa transkrip tersedia</label>
+            <select id="language-select"></select>
+            <span id="language-note" class="language-note"></span>
+            <label class="permission-check">
+              <input id="audio-authorized" type="checkbox" />
+              <span>Saya memiliki video ini atau izin untuk memproses audionya.</span>
+            </label>
+          </div>
+          <div id="status" class="status" role="status" aria-live="polite"></div>
+          <div class="caption-note"><span>✦</span> Bahasa caption default video diprioritaskan · jika tidak terdeteksi, bahasa Inggris dipilih jika tersedia</div>
+        </section>
+
+        <section id="workspace" class="workspace hidden" aria-live="polite">
+          <div class="section-heading">
+            <div><div class="eyebrow"><span class="eyebrow-line"></span> SEKARANG DIPUTAR</div><h2>Ruang kerja</h2></div>
+            <a id="download-link" class="download-link" href="#" download><span aria-hidden="true">↓</span> Unduh JSON</a>
+          </div>
+          <div class="workspace-grid">
+            <div class="video-column">
+              <div class="video-frame">
+                <iframe id="video-frame" title="Pemutar video YouTube" allow="autoplay; encrypted-media; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+                <div id="player-message" class="player-message hidden" role="status">
+                  <span id="player-error-text"></span>
+                  <a id="player-fallback-link" href="#" target="_blank" rel="noreferrer">Buka video di YouTube ↗</a>
+                </div>
+              </div>
+              <div id="video-info" class="video-info"></div>
+            </div>
+            <div class="transcript-panel">
+              <div class="transcript-header">
+                <div><h3>Transkrip</h3><span id="segment-count" class="segment-count"></span></div>
+                <div class="transcript-actions">
+                  <span id="save-state" class="save-state"></span>
+                  <button id="align-button" type="button" class="align-button">Buat timestamp per kata</button>
+                </div>
+              </div>
+              <div id="alignment-progress" class="alignment-progress hidden">
+                <div class="alignment-progress-copy"><span id="alignment-message"></span><span id="alignment-percent">0%</span></div>
+                <progress id="alignment-bar" max="100" value="0"></progress>
+              </div>
+              <p class="alignment-note">Timestamp per kata diperkirakan dari audio dan caption asli; hasilnya dapat meleset jika caption tidak sesuai dengan suara.</p>
+              <div id="segments" class="segments"></div>
+            </div>
+            <section class="timeline-editor" aria-label="Editor timeline transkrip">
+              <div class="timeline-heading">
+                <div><h3>Timeline</h3><span id="timeline-duration" class="timeline-duration"></span></div>
+                <span class="timeline-hint">Seret klip untuk memindahkan · tarik sisi klip untuk mengubah durasi</span>
+              </div>
+              <div id="timeline-viewport" class="timeline-viewport">
+                <div id="timeline-canvas" class="timeline-canvas">
+                  <div id="timeline-ruler" class="timeline-ruler"></div>
+                  <div id="timeline-lane" class="timeline-lane"></div>
+                  <div id="timeline-playhead" class="timeline-playhead"></div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="library">
+          <div class="section-heading library-heading">
+            <div><div class="eyebrow"><span class="eyebrow-line"></span> KOLEKSI ANDA</div><h2>Video tersimpan</h2></div>
+            <span id="library-count" class="library-count">0 video</span>
+          </div>
+          <div id="library-list" class="library-list"></div>
+          <div id="empty-library" class="empty-library"><span class="empty-icon">▤</span><span>Video yang sudah diproses akan muncul di sini.</span></div>
+        </section>
+      </main>
+      <footer><span>rangkai.</span><span>Caption asli, tersimpan lokal di perangkat Anda.</span></footer>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>
