@@ -4,6 +4,7 @@ import math
 import pathlib
 import sys
 import traceback
+import zipfile
 
 
 def emit(event_type, **values):
@@ -34,6 +35,31 @@ def align_groups(segments, window_seconds=30, max_segments=40):
     if current:
         groups.append(current)
     return groups
+
+
+def load_alignment_model(whisperx, language):
+    try:
+        return whisperx.load_align_model(language_code=language, device="cpu")
+    except RuntimeError as error:
+        if language != "en" or "failed finding central directory" not in str(error):
+            raise
+
+        import torch
+        import torchaudio
+
+        bundle = torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H
+        checkpoint = pathlib.Path(torch.hub.get_dir()) / "checkpoints" / bundle._path
+        if not checkpoint.is_file() or zipfile.is_zipfile(checkpoint):
+            raise error
+
+        checkpoint.unlink()
+        emit(
+            "progress",
+            stage="loading-model",
+            progress=45,
+            message="Cache model bahasa Inggris rusak; mengunduh ulang model penyelaras...",
+        )
+        return whisperx.load_align_model(language_code=language, device="cpu")
 
 
 def main():
@@ -92,7 +118,7 @@ def main():
         message=f"Memuat model penyelaras bahasa {language.upper()} (CPU, unduhan pertama dapat memakan waktu)...",
     )
     with contextlib.redirect_stdout(sys.stderr):
-        model, metadata = whisperx.load_align_model(language_code=language, device="cpu")
+        model, metadata = load_alignment_model(whisperx, language)
 
     groups = align_groups(segments)
     if not groups:
