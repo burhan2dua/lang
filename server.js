@@ -1,18 +1,25 @@
 const express = require('express');
 const fs = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 const { randomUUID } = require('node:crypto');
+const { MongoClient, MongoError } = require('mongodb');
 const { listLanguages, fetchTranscript } = require('youtube-transcript-plus');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = '127.0.0.1';
 const TRANSCRIPTS_DIR = path.join(__dirname, 'transcripts');
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017';
+const MONGODB_DATABASE = 'lang';
 const ALIGNMENT_PYTHON = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
 const ALIGNMENT_SCRIPT = path.join(__dirname, 'scripts', 'align_words.py');
 const VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
+const mongoClient = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 30000 });
+let transcriptCollection;
+let migrationCollection;
 const wordJobs = new Map();
 let activeWordJobId = null;
 
@@ -24,7 +31,9 @@ function extractVideoId(input) {
   try {
     url = new URL(input);
   } catch {
-    throw new Error('Masukkan URL YouTube yang valid.');
+    const error = new Error('Masukkan URL YouTube yang valid.');
+    error.status = 400;
+    throw error;
   }
 
   const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
@@ -40,16 +49,20 @@ function extractVideoId(input) {
   }
 
   if (!videoId || !VIDEO_ID_PATTERN.test(videoId)) {
-    throw new Error('URL harus mengarah ke video YouTube yang valid.');
+    const error = new Error('URL harus mengarah ke video YouTube yang valid.');
+    error.status = 400;
+    throw error;
   }
   return videoId;
 }
 
-function transcriptPath(videoId) {
+function validateVideoId(videoId) {
   if (!VIDEO_ID_PATTERN.test(videoId)) {
-    throw new Error('ID video tidak valid.');
+    const error = new Error('ID video tidak valid.');
+    error.status = 400;
+    throw error;
   }
-  return path.join(TRANSCRIPTS_DIR, `${videoId}.json`);
+  return videoId;
 }
 
 async function getCaptionLanguages(videoId) {
@@ -107,6 +120,9 @@ async function getCaptionLanguages(videoId) {
 }
 
 function transcriptError(error) {
+  if (error instanceof MongoError) {
+    return { status: 503, message: 'MongoDB tidak dapat menyimpan atau membaca transkrip. Pastikan layanan MongoDB berjalan.' };
+  }
   if (error.name === 'YoutubeTranscriptDisabledError') {
     return { status: 404, message: 'Pemilik video menonaktifkan caption; transkrip tidak tersedia.' };
   }
@@ -128,11 +144,52 @@ function transcriptError(error) {
   return { status: 400, message: error.message || 'Gagal mengambil transkrip.' };
 }
 
-async function writeTranscript(transcript) {
-  const destination = transcriptPath(transcript.videoId);
-  const temporary = `${destination}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(temporary, `${JSON.stringify(transcript, null, 2)}\n`, 'utf8');
-  await fs.rename(temporary, destination);
+function transcriptFromDocument(document) {
+  if (!document) return null;
+  const { _id, ...transcript } = document;
+  return transcript;
+}
+
+async function saveTranscript(transcript) {
+  await transcriptCollection.replaceOne(
+    { _id: transcript.videoId },
+    { ...transcript, _id: transcript.videoId },
+    { upsert: true },
+  );
+}
+
+async function migrateLegacyTranscripts() {
+  const migrationId = 'legacy-json-transcripts-v1';
+  if (await migrationCollection.findOne({ _id: migrationId })) return 0;
+
+  let files;
+  try {
+    files = await fs.readdir(TRANSCRIPTS_DIR);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    files = [];
+  }
+
+  let migrated = 0;
+  for (const file of files.filter((name) => name.endsWith('.json'))) {
+    const transcript = JSON.parse(await fs.readFile(path.join(TRANSCRIPTS_DIR, file), 'utf8'));
+    const videoId = validateVideoId(path.basename(file, '.json'));
+    if (transcript.videoId !== videoId) {
+      throw new Error(`ID video pada file legacy ${file} tidak cocok dengan namanya.`);
+    }
+    const result = await transcriptCollection.updateOne(
+      { _id: videoId },
+      { $setOnInsert: { ...transcript, _id: videoId } },
+      { upsert: true },
+    );
+    migrated += result.upsertedCount;
+  }
+  await migrationCollection.updateOne(
+    { _id: migrationId },
+    { $setOnInsert: { completedAt: new Date().toISOString() } },
+    { upsert: true },
+  );
+  return migrated;
 }
 
 function updateWordJob(jobId, update) {
@@ -141,7 +198,7 @@ function updateWordJob(jobId, update) {
 }
 
 async function runWordAlignment(jobId, transcript) {
-  const jobDirectory = path.join(TRANSCRIPTS_DIR, '.jobs', jobId);
+  const jobDirectory = path.join(os.tmpdir(), 'lang-alignment-jobs', jobId);
   try {
     await fs.mkdir(jobDirectory, { recursive: true });
     updateWordJob(jobId, { state: 'running', progress: 1, stage: 'starting', message: 'Menyiapkan audio dan caption...' });
@@ -202,7 +259,7 @@ async function runWordAlignment(jobId, transcript) {
       completedAt: new Date().toISOString(),
     };
     transcript.updatedAt = new Date().toISOString();
-    await writeTranscript(transcript);
+    await saveTranscript(transcript);
     const unalignedWords = Number(result.unalignedWords) || 0;
     const completionMessage = `${result.words.length.toLocaleString('id-ID')} kata berhasil diselaraskan.${unalignedWords ? ` ${unalignedWords.toLocaleString('id-ID')} kata tidak mendapatkan timestamp dan tidak ditampilkan.` : ''}`;
     updateWordJob(jobId, {
@@ -283,7 +340,7 @@ app.post('/api/process', async (req, res) => {
     };
     transcript.sourceCaptions = transcript.segments;
 
-    await writeTranscript(transcript);
+    await saveTranscript(transcript);
     res.json(transcript);
   } catch (error) {
     console.error('Gagal memproses transkrip:', error);
@@ -302,8 +359,10 @@ app.post('/api/transcripts/:videoId/align-words', async (req, res) => {
         error: 'WhisperX belum terpasang. Jalankan npm run setup:alignment terlebih dahulu.',
       });
     }
-    const file = transcriptPath(req.params.videoId);
-    const transcript = JSON.parse(await fs.readFile(file, 'utf8'));
+    const videoId = validateVideoId(req.params.videoId);
+    const storedTranscript = await transcriptCollection.findOne({ _id: videoId });
+    if (!storedTranscript) return res.status(404).json({ error: 'Transkrip tidak ditemukan.' });
+    const transcript = transcriptFromDocument(storedTranscript);
     if (extractVideoId(transcript.url) !== transcript.videoId) {
       return res.status(400).json({ error: 'URL video pada data transkrip tidak valid.' });
     }
@@ -331,8 +390,8 @@ app.post('/api/transcripts/:videoId/align-words', async (req, res) => {
     runWordAlignment(jobId, transcript);
     res.status(202).json({ jobId, state: job.state });
   } catch (error) {
-    const status = error.code === 'ENOENT' ? 404 : 400;
-    res.status(status).json({ error: status === 404 ? 'Transkrip tidak ditemukan.' : error.message || 'Gagal memulai penyelarasan.' });
+    const status = error.status || (error.code === 'ENOENT' ? 404 : 500);
+    res.status(status).json({ error: error.message || 'Gagal memulai penyelarasan.' });
   }
 });
 
@@ -345,25 +404,17 @@ app.get('/api/jobs/:jobId', (req, res) => {
 
 app.get('/api/transcripts', async (_req, res) => {
   try {
-    await fs.mkdir(TRANSCRIPTS_DIR, { recursive: true });
-    const files = await fs.readdir(TRANSCRIPTS_DIR);
-    const transcripts = await Promise.all(
-      files
-        .filter((file) => file.endsWith('.json'))
-        .map(async (file) => {
-          const contents = await fs.readFile(path.join(TRANSCRIPTS_DIR, file), 'utf8');
-          const transcript = JSON.parse(contents);
-          return {
-            videoId: transcript.videoId,
-            title: transcript.title,
-            url: transcript.url,
-            language: transcript.language,
-            thumbnailUrl: transcript.thumbnailUrl,
-            generatedAt: transcript.generatedAt,
-          };
-        }),
-    );
-    transcripts.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
+    const transcripts = await transcriptCollection.find({}, {
+      projection: {
+        _id: 0,
+        videoId: 1,
+        title: 1,
+        url: 1,
+        language: 1,
+        thumbnailUrl: 1,
+        generatedAt: 1,
+      },
+    }).sort({ generatedAt: -1 }).toArray();
     res.json(transcripts);
   } catch (error) {
     console.error('Gagal membaca daftar transkrip:', error);
@@ -373,39 +424,46 @@ app.get('/api/transcripts', async (_req, res) => {
 
 app.get('/api/transcripts/:videoId', async (req, res) => {
   try {
-    const contents = await fs.readFile(transcriptPath(req.params.videoId), 'utf8');
-    res.json(JSON.parse(contents));
+    const videoId = validateVideoId(req.params.videoId);
+    const transcript = transcriptFromDocument(await transcriptCollection.findOne({ _id: videoId }));
+    if (!transcript) return res.status(404).json({ error: 'Transkrip tidak ditemukan.' });
+    res.json(transcript);
   } catch (error) {
-    const status = error.code === 'ENOENT' ? 404 : 400;
-    res.status(status).json({ error: status === 404 ? 'Transkrip tidak ditemukan.' : 'Gagal membaca transkrip.' });
+    console.error('Gagal membaca transkrip:', error);
+    res.status(error.status || 500).json({ error: error.message || 'Gagal membaca transkrip.' });
   }
 });
 
 app.get('/api/transcripts/:videoId/download', async (req, res) => {
   try {
-    const file = transcriptPath(req.params.videoId);
-    await fs.access(file);
-    res.download(file, `${req.params.videoId}.json`);
+    const videoId = validateVideoId(req.params.videoId);
+    const transcript = transcriptFromDocument(await transcriptCollection.findOne({ _id: videoId }));
+    if (!transcript) return res.status(404).json({ error: 'Transkrip tidak ditemukan.' });
+    res.attachment(`${videoId}.json`).type('application/json').send(`${JSON.stringify(transcript, null, 2)}\n`);
   } catch (error) {
-    const status = error.code === 'ENOENT' ? 404 : 400;
-    res.status(status).json({ error: status === 404 ? 'File JSON tidak ditemukan.' : 'Gagal mengunduh file JSON.' });
+    console.error('Gagal menyiapkan unduhan transkrip:', error);
+    res.status(error.status || 500).json({ error: error.message || 'Gagal mengunduh transkrip.' });
   }
 });
 
 app.delete('/api/transcripts/:videoId', async (req, res) => {
   try {
-    await fs.unlink(transcriptPath(req.params.videoId));
+    const videoId = validateVideoId(req.params.videoId);
+    const result = await transcriptCollection.deleteOne({ _id: videoId });
+    if (!result.deletedCount) return res.status(404).json({ error: 'Transkrip tidak ditemukan.' });
     res.json({ deleted: true });
   } catch (error) {
-    const status = error.code === 'ENOENT' ? 404 : 400;
-    res.status(status).json({ error: status === 404 ? 'File JSON tidak ditemukan.' : 'Gagal menghapus file JSON.' });
+    console.error('Gagal menghapus transkrip:', error);
+    res.status(error.status || 500).json({ error: error.message || 'Gagal menghapus transkrip.' });
   }
 });
 
 app.put('/api/transcripts/:videoId/timings', async (req, res) => {
   try {
-    const file = transcriptPath(req.params.videoId);
-    const transcript = JSON.parse(await fs.readFile(file, 'utf8'));
+    const videoId = validateVideoId(req.params.videoId);
+    const storedTranscript = await transcriptCollection.findOne({ _id: videoId });
+    if (!storedTranscript) return res.status(404).json({ error: 'Transkrip tidak ditemukan.' });
+    const transcript = transcriptFromDocument(storedTranscript);
     const { segments } = req.body || {};
     if (!Array.isArray(segments) || segments.length !== transcript.segments.length) {
       return res.status(400).json({ error: 'Data waktu segmen tidak sesuai dengan transkrip.' });
@@ -420,7 +478,9 @@ app.put('/api/transcripts/:videoId/timings', async (req, res) => {
         end < start ||
         (text !== undefined && typeof text !== 'string')
       ) {
-        throw new Error(`Data segmen ${index + 1} tidak valid.`);
+        const error = new Error(`Data segmen ${index + 1} tidak valid.`);
+        error.status = 400;
+        throw error;
       }
       return {
         ...segment,
@@ -436,15 +496,30 @@ app.put('/api/transcripts/:videoId/timings', async (req, res) => {
       transcript.duration = Number(req.body.duration.toFixed(3));
     }
     transcript.updatedAt = new Date().toISOString();
-    await writeTranscript(transcript);
+    await saveTranscript(transcript);
     res.json({ updatedAt: transcript.updatedAt });
   } catch (error) {
-    const status = error.code === 'ENOENT' ? 404 : 400;
-    res.status(status).json({ error: error.message || 'Gagal menyimpan perubahan waktu.' });
+    console.error('Gagal menyimpan perubahan transkrip:', error);
+    res.status(error.status || 500).json({ error: error.message || 'Gagal menyimpan perubahan waktu.' });
   }
 });
 
-app.listen(PORT, HOST, async () => {
-  await fs.mkdir(TRANSCRIPTS_DIR, { recursive: true });
-  console.log(`Aplikasi siap di http://${HOST}:${PORT}`);
+async function startServer() {
+  await mongoClient.connect();
+  const database = mongoClient.db(MONGODB_DATABASE);
+  transcriptCollection = database.collection('transcripts');
+  migrationCollection = database.collection('migrations');
+  await transcriptCollection.createIndex({ generatedAt: -1 });
+  const migratedCount = await migrateLegacyTranscripts();
+  console.log(`MongoDB aktif: database ${MONGODB_DATABASE}${migratedCount ? `, ${migratedCount} transkrip lama dimigrasikan` : ''}.`);
+  app.listen(PORT, HOST, () => {
+    console.log(`Aplikasi siap di http://${HOST}:${PORT}`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error('Gagal mengaktifkan MongoDB atau memulai aplikasi:', error);
+  mongoClient.close().finally(() => {
+    process.exitCode = 1;
+  });
 });

@@ -343,7 +343,7 @@ async function startWordAlignment(videoId, authorized = false) {
         const transcript = await requestJson(`/api/transcripts/${encodeURIComponent(videoId)}`);
         if (activeTranscript?.videoId === videoId) renderTranscript(transcript);
         showAlignmentProgress(100, job.message);
-        setStatus(`${job.message} Timestamp kata tersimpan di JSON.`);
+        setStatus(`${job.message} Timestamp kata tersimpan di MongoDB.`);
         return;
       }
       if (job.state === 'failed') {
@@ -549,7 +549,7 @@ async function refreshLibrary() {
           </div>
         </button>
         <div class="card-actions">
-          <button type="button" class="delete-button">Hapus JSON</button>
+          <button type="button" class="delete-button">Hapus video</button>
         </div>`;
       card.querySelector('.library-open').addEventListener('click', async () => {
         try {
@@ -561,7 +561,7 @@ async function refreshLibrary() {
         }
       });
       card.querySelector('.delete-button').addEventListener('click', async () => {
-        if (!window.confirm(`Hapus JSON transkrip "${transcript.title}" dari folder transcripts?`)) return;
+        if (!window.confirm(`Hapus transkrip "${transcript.title}" dari database MongoDB?`)) return;
         try {
           clearTimeout(saveTimers.get(transcript.videoId));
           saveTimers.delete(transcript.videoId);
@@ -572,7 +572,7 @@ async function refreshLibrary() {
             workspace.classList.add('hidden');
             youtubePlayer?.stopVideo();
           }
-          setStatus('File JSON transkrip berhasil dihapus.');
+          setStatus('Transkrip berhasil dihapus dari MongoDB.');
           await refreshLibrary();
         } catch (error) {
           setStatus(error.message, true);

@@ -9,6 +9,7 @@ terutama jika caption tidak cocok dengan audio.
 Persyaratan Windows:
 
 - Node.js 22 atau lebih baru
+- MongoDB Server dengan layanan Windows bernama `MongoDB`
 - Python 3.12
 - FFmpeg tersedia di `PATH`
 
@@ -29,6 +30,15 @@ tambahan.
 
 ## Data lokal
 
-Transkrip tersimpan di folder `transcripts/`. Folder ini, environment Python, dan
-dependency Node sengaja tidak disertakan di GitHub; transkrip lokal tidak tersinkron
-otomatis ke perangkat lain.
+`npm start` memastikan layanan Windows MongoDB berjalan, lalu membuat/menggunakan
+database lokal `lang` dan collection `transcripts`. Daftar video, perubahan teks
+dan waktu, serta penghapusan semuanya tersimpan di MongoDB. Unduhan JSON tetap
+tersedia sebagai ekspor.
+
+Saat pertama kali dijalankan setelah upgrade, file transkrip lama di `transcripts/`
+akan dimigrasikan satu kali ke database. File lama dibiarkan sebagai cadangan dan
+tidak digunakan lagi untuk membaca atau menyimpan perubahan.
+
+Database lokal ini tidak otomatis tersinkron ke perangkat lain. Folder `.venv`,
+`node_modules`, file transkrip cadangan, dan environment lokal tidak disertakan di
+GitHub.
